@@ -56,7 +56,7 @@ class AIAlarmApp extends StatelessWidget {
         ),
       ),
       debugShowCheckedModeBanner: false,
-      home: const TestAlarmScreen(),
+      home: const ClockApp(),
     );
   }
 }

@@ -1,19 +1,57 @@
+import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:alarm/widgets/animated_space_background.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart' as fln;
-import 'package:timezone/timezone.dart' as tz;
-import 'dart:ui';
-
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/alarm_task_model.dart';
 import '../providers/alarm_provider.dart' as alarm_providers;
 import 'setup_screen.dart';
 
-final fln.FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-    fln.FlutterLocalNotificationsPlugin();
+final FlutterLocalNotificationsPlugin fln = FlutterLocalNotificationsPlugin();
 
-class AlarmTab extends ConsumerWidget {
+class AlarmTab extends ConsumerStatefulWidget {
   const AlarmTab({super.key});
+  @override
+  ConsumerState<AlarmTab> createState() => _AlarmTabState();
+}
+
+class _AlarmTabState extends ConsumerState<AlarmTab> {
+  @override
+  void initState() {
+    super.initState();
+    _initAlarm();
+  }
+
+  Future<void> _initAlarm() async {
+    await AndroidAlarmManager.initialize();
+    const AndroidInitializationSettings androidSettings =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initSettings =
+        InitializationSettings(android: androidSettings);
+
+    await fln.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse res) {
+        if (res.payload != null && res.payload!.startsWith('alarm_')) {
+          final index = int.tryParse(res.payload!.split('_')[1]);
+          if (index != null && mounted) {
+            _showAlarmPopup(context, index);
+          }
+        }
+      },
+    );
+  }
+
+  void _requestExactAlarmPermission() async {
+    if (Platform.isAndroid) {
+      final intent =
+          AndroidIntent(action: 'android.settings.REQUEST_SCHEDULE_EXACT_ALARM');
+      await intent.launch();
+    }
+  }
 
   String _formatTime(BuildContext context, int hour, int minute) {
     final time = TimeOfDay(hour: hour, minute: minute);
@@ -21,47 +59,115 @@ class AlarmTab extends ConsumerWidget {
   }
 
   Future<void> _scheduleAlarm(AlarmModel alarm, int id) async {
-    final androidDetails = fln.AndroidNotificationDetails(
-      'alarm_channel',
-      'Alarms',
-      channelDescription: 'Channel for Alarm notifications',
-      importance: fln.Importance.max,
-      priority: fln.Priority.high,
-      playSound: true,
-      fullScreenIntent: true,
-    );
-
-    await flutterLocalNotificationsPlugin.zonedSchedule(
-      id,
-      'Alarm - ${alarm.label.isEmpty ? 'Reminder' : alarm.label}',
-      'Time to wake up!',
-      _nextInstanceOfTime(alarm.hour, alarm.minute),
-      fln.NotificationDetails(android: androidDetails),
-      androidScheduleMode: fln.AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          fln.UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: alarm.repeat ? fln.DateTimeComponents.time : null,
-    );
-  }
-
-  tz.TZDateTime _nextInstanceOfTime(int hour, int minute) {
-    final tz.TZDateTime now = tz.TZDateTime.now(tz.local);
-    tz.TZDateTime scheduled = tz.TZDateTime(
-      tz.local,
+    final now = DateTime.now();
+    DateTime scheduledTime = DateTime(
       now.year,
       now.month,
       now.day,
-      hour,
-      minute,
+      alarm.hour,
+      alarm.minute,
     );
-    if (scheduled.isBefore(now)) {
-      scheduled = scheduled.add(const Duration(days: 1));
+
+    if (scheduledTime.isBefore(now)) {
+      scheduledTime = scheduledTime.add(const Duration(days: 1));
     }
-    return scheduled;
+
+    final delay = scheduledTime.difference(now);
+
+    await AndroidAlarmManager.oneShot(
+      delay,
+      id,
+      () => _alarmCallback(id),
+      exact: true,
+      wakeup: true,
+      rescheduleOnReboot: true,
+    );
+  }
+
+  static Future<void> _alarmCallback(int id) async {
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'alarm_channel_id',
+      'Alarms',
+      importance: Importance.max,
+      priority: Priority.high,
+      fullScreenIntent: true,
+      visibility: NotificationVisibility.public,
+      ticker: 'Alarm',
+    );
+
+    const NotificationDetails platformDetails =
+        NotificationDetails(android: androidDetails);
+
+    await fln.show(
+      id,
+      'Alarm Ringing',
+      'Tap to dismiss or snooze',
+      platformDetails,
+      payload: 'alarm_$id',
+    );
+  }
+
+  void _showAlarmPopup(BuildContext context, int index) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return Dialog(
+          backgroundColor: Colors.black87,
+          insetPadding: const EdgeInsets.all(0),
+          child: Container(
+            height: MediaQuery.of(context).size.height,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.alarm, size: 80, color: Colors.white),
+                const SizedBox(height: 20),
+                const Text(
+                  "Wake up!",
+                  style: TextStyle(fontSize: 32, color: Colors.white),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                  icon: const Icon(Icons.check),
+                  label: const Text("Dismiss"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    AndroidAlarmManager.oneShot(
+                      const Duration(minutes: 5),
+                      index + 10000,
+                      () => _alarmCallback(index),
+                      exact: true,
+                      wakeup: true,
+                    );
+                  },
+                  icon: const Icon(Icons.snooze),
+                  label: const Text("Snooze 5 min"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final alarms = ref.watch(alarm_providers.alarmListProvider);
     final notifier = ref.read(alarm_providers.alarmListProvider.notifier);
 
@@ -76,13 +182,6 @@ class AlarmTab extends ConsumerWidget {
               title: const Text('Alarms'),
               backgroundColor: Colors.transparent,
               elevation: 0,
-              centerTitle: true,
-              titleTextStyle: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.cyanAccent,
-                shadows: [Shadow(color: Colors.blue, blurRadius: 10)],
-              ),
             ),
             body: ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -101,26 +200,25 @@ class AlarmTab extends ConsumerWidget {
                       ),
                     );
 
-                    final updatedAlarm = ref.read(alarm_providers.alarmListProvider)[index];
+                    final updatedAlarm =
+                        ref.read(alarm_providers.alarmListProvider)[index];
                     if (updatedAlarm.enabled) {
+                      _requestExactAlarmPermission();
                       await _scheduleAlarm(updatedAlarm, index);
                     } else {
-                      await flutterLocalNotificationsPlugin.cancel(index);
+                      await AndroidAlarmManager.cancel(index);
                     }
                   },
                   child: Container(
                     margin: const EdgeInsets.symmetric(vertical: 10),
-                    padding: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.07),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.blueAccent.withOpacity(0.4),
-                        width: 1.2,
-                      ),
+                      color: Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: Colors.white12),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.cyanAccent.withOpacity(0.1),
+                          color: Colors.blueAccent.withOpacity(0.1),
                           blurRadius: 12,
                           spreadRadius: 1,
                           offset: const Offset(0, 4),
@@ -136,19 +234,15 @@ class AlarmTab extends ConsumerWidget {
                             Text(
                               _formatTime(context, alarm.hour, alarm.minute),
                               style: const TextStyle(
-                                fontSize: 34,
+                                fontSize: 32,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
-                                shadows: [Shadow(color: Colors.blueAccent, blurRadius: 6)],
                               ),
                             ),
-                            const SizedBox(height: 6),
+                            const SizedBox(height: 4),
                             Text(
                               alarm.label.isEmpty ? 'No Label' : alarm.label,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 14,
-                              ),
+                              style: const TextStyle(color: Colors.white70),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -164,15 +258,17 @@ class AlarmTab extends ConsumerWidget {
                           value: alarm.enabled,
                           onChanged: (val) async {
                             notifier.toggleAlarm(index);
-                            final updatedAlarm = ref.read(alarm_providers.alarmListProvider)[index];
+                            final updatedAlarm =
+                                ref.read(alarm_providers.alarmListProvider)[index];
                             if (updatedAlarm.enabled) {
+                              _requestExactAlarmPermission();
                               await _scheduleAlarm(updatedAlarm, index);
                             } else {
-                              await flutterLocalNotificationsPlugin.cancel(index);
+                              await AndroidAlarmManager.cancel(index);
                             }
                           },
-                          activeColor: Colors.cyanAccent,
-                        )
+                          activeColor: Colors.lightBlueAccent,
+                        ),
                       ],
                     ),
                   ),
@@ -184,8 +280,8 @@ class AlarmTab extends ConsumerWidget {
                 context,
                 MaterialPageRoute(builder: (_) => const AlarmSetupScreen()),
               ),
-              backgroundColor: Colors.cyanAccent.withOpacity(0.9),
-              child: const Icon(Icons.add, color: Colors.black),
+              backgroundColor: Colors.deepPurpleAccent,
+              child: const Icon(Icons.add),
             ),
           ),
         ),
