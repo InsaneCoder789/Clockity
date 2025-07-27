@@ -9,6 +9,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/alarm_task_model.dart';
 import '../providers/alarm_provider.dart' as alarm_providers;
 import 'setup_screen.dart';
+import 'package:alarm/ai_tasks/voice_challenge.dart';
+import 'package:alarm/ai_tasks/face_detection.dart';
+import 'package:alarm/ai_tasks/memory_test.dart';
+import 'package:alarm/ai_tasks/object_detection.dart'; // <-- Import voice challenge
 
 final FlutterLocalNotificationsPlugin fln = FlutterLocalNotificationsPlugin();
 
@@ -130,9 +134,27 @@ class _AlarmTabState extends ConsumerState<AlarmTab> {
                 const SizedBox(height: 20),
                 ElevatedButton.icon(
                   onPressed: () {
-                    Navigator.of(context).pop();
+                    final alarms = ref.read(alarm_providers.alarmListProvider);
+                    final alarm = alarms[index];
+
+                    if (alarm.dismissMethod.toLowerCase() == 'voice challenge') {
+                      Navigator.of(context).pop();
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => VoiceChallengeScreen(
+                            onSuccess: () async {
+                              await AndroidAlarmManager.cancel(index);
+                              Navigator.of(context).pop();
+                            },
+                          ),
+                        ),
+                      );
+                    } else {
+                      Navigator.of(context).pop();
+                    }
                   },
-                  icon: const Icon(Icons.check),
+                  icon: const Icon(Icons.mic),
                   label: const Text("Dismiss"),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.redAccent,

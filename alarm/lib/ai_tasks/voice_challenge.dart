@@ -1,43 +1,113 @@
-// lib/screens/voice_challenge_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:deepgram_speech_to_text/deepgram_speech_to_text.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
 import 'package:alarm/widgets/animated_space_background.dart';
 
 class VoiceChallengeScreen extends StatefulWidget {
-  const VoiceChallengeScreen({super.key});
+  final VoidCallback onSuccess;
+  const VoiceChallengeScreen({super.key, required this.onSuccess});
 
   @override
   State<VoiceChallengeScreen> createState() => _VoiceChallengeScreenState();
 }
 
 class _VoiceChallengeScreenState extends State<VoiceChallengeScreen> {
-  final FlutterTts _flutterTts = FlutterTts();
-  final String _targetPhrase = 'The stars guide my morning mission';
-  final String _status = '';
-  bool _isSpeaking = false;
+  final FlutterTts _tts = FlutterTts();
+  final String _phrase = 'The stars guide my morning mission';
+
+  final String _apiKey = 'e15f7e6b9cfe65de85a264a3a34567efa27d6d94'; // 🔑 Replace this
+  late Deepgram _deepgram;
+
+  StreamSubscription<DeepgramListenResult>? _subscription;
+  AudioRecorder? _recorder;
+  bool _isListening = false;
+  String _status = '';
 
   @override
   void initState() {
     super.initState();
     _initTTS();
+    _deepgram = Deepgram(_apiKey);
   }
 
   Future<void> _initTTS() async {
-    await _flutterTts.setLanguage('en-US');
-    await _flutterTts.setPitch(1.2); // High pitch for futuristic tone
-    await _flutterTts.setSpeechRate(0.45); // Clear and slow
+    await _tts.setLanguage('en-US');
+    await _tts.setPitch(1.2);
+    await _tts.setSpeechRate(0.45);
+  }
+
+  Future<void> _startListening() async {
+    final micStatus = await Permission.microphone.request();
+    if (!micStatus.isGranted) {
+      setState(() => _status = '❌ Microphone permission denied');
+      return;
+    }
+
+    _recorder = AudioRecorder();
+
+    final micStream = await _recorder!.startStream(
+      RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 16000,
+        numChannels: 1,
+      ),
+    );
+
+    final queryParams = {
+      'encoding': 'linear16',
+      'sample_rate': 16000,
+      'language': 'en',
+    };
+
+    setState(() {
+      _status = '🎙️ Listening...';
+      _isListening = true;
+    });
+
+    final stream = _deepgram.listen.live(
+      micStream,
+      queryParams: queryParams,
+    );
+
+    _subscription = stream.listen((result) {
+      final transcript = result.transcript ?? '';
+      debugPrint('Deepgram Transcript: $transcript');
+
+      if (transcript.toLowerCase().contains(_phrase.toLowerCase())) {
+        _stopListening();
+        setState(() => _status = '✅ Phrase matched!');
+        Future.delayed(const Duration(seconds: 1), () {
+          widget.onSuccess();
+          Navigator.pop(context);
+        });
+      } else {
+        setState(() => _status = '❌ Try again...');
+      }
+    }, onError: (err) {
+      setState(() => _status = '❌ Error: $err');
+    });
+  }
+
+  Future<void> _stopListening() async {
+    await _subscription?.cancel();
+    await _recorder?.stop();
+    setState(() {
+      _isListening = false;
+      _status = 'Stopped';
+    });
   }
 
   Future<void> _speakPhrase() async {
-    setState(() => _isSpeaking = true);
-    await _flutterTts.speak(_targetPhrase);
-    await Future.delayed(const Duration(seconds: 2)); // wait to finish
-    setState(() => _isSpeaking = false);
+    await _tts.speak(_phrase);
   }
 
   @override
   void dispose() {
-    _flutterTts.stop();
+    _tts.stop();
+    _stopListening();
     super.dispose();
   }
 
@@ -49,8 +119,8 @@ class _VoiceChallengeScreenState extends State<VoiceChallengeScreen> {
         Scaffold(
           backgroundColor: Colors.transparent,
           appBar: AppBar(
-            title: const Text('🛰️ Voice Challenge'),
             backgroundColor: Colors.transparent,
+            title: const Text('🚀 Voice Challenge'),
           ),
           body: Padding(
             padding: const EdgeInsets.all(24.0),
@@ -58,12 +128,12 @@ class _VoiceChallengeScreenState extends State<VoiceChallengeScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Text(
-                  'Memorize this phrase:',
-                  style: TextStyle(fontSize: 20),
+                  'Speak this phrase to dismiss alarm:',
+                  style: TextStyle(fontSize: 18, color: Colors.white70),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Text(
-                  '"$_targetPhrase"',
+                  '"$_phrase"',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontSize: 22,
@@ -73,19 +143,28 @@ class _VoiceChallengeScreenState extends State<VoiceChallengeScreen> {
                 ),
                 const SizedBox(height: 30),
                 ElevatedButton.icon(
-                  onPressed: _isSpeaking ? null : _speakPhrase,
+                  onPressed: _speakPhrase,
                   icon: const Icon(Icons.volume_up),
-                  label: Text(_isSpeaking ? 'Speaking...' : 'Speak it'),
+                  label: const Text('Hear Phrase'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange),
                 ),
                 const SizedBox(height: 20),
-                if (_status.isNotEmpty)
-                  Text(
-                    _status,
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: _status.contains('✅') ? Colors.greenAccent : Colors.redAccent,
-                    ),
-                  )
+                ElevatedButton.icon(
+                  onPressed: _isListening ? _stopListening : _startListening,
+                  icon: Icon(_isListening ? Icons.stop : Icons.mic),
+                  label: Text(_isListening ? 'Stop Listening' : 'Start Listening'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+                ),
+                const SizedBox(height: 30),
+                Text(
+                  _status,
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: _status.contains('✅')
+                        ? Colors.greenAccent
+                        : (_status.contains('❌') ? Colors.redAccent : Colors.white),
+                  ),
+                ),
               ],
             ),
           ),
