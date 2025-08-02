@@ -17,7 +17,7 @@ class _ClockAppState extends State<ClockApp> {
   final List<Widget> _tabs = [
     const AlarmTab(),
     const WorldClockTab(),
-    const TimerTab(),
+    TimerTab(),
     const StopwatchTab(),
   ];
 
